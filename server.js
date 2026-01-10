@@ -82,26 +82,24 @@ const r = await fetch(url, {
       let html = await r.text();
 
       // JS無効化
-      html = html.replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, "");
-
-      // noscript展開
-      html = html.replace(/<noscript>([\s\S]*?)<\/noscript>/gi, "$1");
-
-      // lazy解除
-      html = html.replace(/loading="lazy"/gi, "");
-
-      // href / src / action / data-src
       html = html.replace(
-        /(href|src|action|data-src|data-original)="([^"]*)"/gi,
-        (m, attr, value) => {
-          try {
-            const abs = new URL(value, url).href;
-            return `${attr}="/proxy?url=${encodeURIComponent(abs)}"`;
-          } catch {
-            return m;
-          }
-        }
-      );
+  /(href|src|data-src|data-original)="([^"]*)"/gi,
+  (m, attr, value) => {
+    try {
+      const abs = new URL(value, url).href;
+      return `${attr}="/proxy?url=${encodeURIComponent(abs)}"`;
+    } catch {
+      return m;
+    }
+  }
+);
+
+// form action は「今のURL」を保持
+html = html.replace(
+  /action="([^"]*)"/gi,
+  () => `action="/proxy?url=${encodeURIComponent(url.href)}"`
+);
+
 
       // srcset
       html = html.replace(/srcset="([^"]*)"/gi, (m, value) => {
