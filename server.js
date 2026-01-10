@@ -45,12 +45,13 @@ app.get("/proxy", async (req, res) => {
   }
 
   try {
-    const r = await fetch(url, {
-      headers: {
-        "user-agent": "simple-web-proxy",
-        "accept": "*/*"
-      }
-    });
+const r = await fetch(url, {
+  headers: {
+    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    "accept": "*/*",
+    "referer": url.origin
+  }
+});
 
     const contentType = r.headers.get("content-type") || "";
 
