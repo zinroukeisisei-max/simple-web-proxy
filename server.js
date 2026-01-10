@@ -14,23 +14,34 @@ app.get("/", (req, res) => {
   `);
 });
 
+function proxifyUrl(raw, baseUrl) {
+  if (!raw) return null;
+  if (
+    raw.startsWith("javascript:") ||
+    raw.startsWith("data:") ||
+    raw.startsWith("#")
+  ) return null;
+
+  try {
+    if (raw.startsWith("//")) {
+      return new URL(baseUrl.protocol + raw).href;
+    }
+    return new URL(raw, baseUrl).href;
+  } catch {
+    return null;
+  }
+}
+
 app.get("/proxy", async (req, res) => {
   const target = req.query.url;
   if (!target) return res.send("url required");
-
-  if (!INTERNAL_KEY) {
-    return res.status(500).send("proxy not configured");
-  }
+  if (!INTERNAL_KEY) return res.status(500).send("proxy not configured");
 
   let url;
   try {
     url = new URL(target);
   } catch {
     return res.send("invalid url");
-  }
-
-  if (!["http:", "https:"].includes(url.protocol)) {
-    return res.send("invalid protocol");
   }
 
   try {
@@ -43,31 +54,29 @@ app.get("/proxy", async (req, res) => {
 
     const contentType = r.headers.get("content-type") || "";
 
-    // ===== HTML の場合 =====
+    // ===== HTML =====
     if (contentType.includes("text/html")) {
       let html = await r.text();
 
+      // 属性系（href/src/action/data-src など）
       html = html.replace(
-        /(href|src|action)="([^"]*)"/gi,
-        (match, attr, value) => {
-          // 無視するやつ
-          if (
-            value.startsWith("javascript:") ||
-            value.startsWith("data:") ||
-            value.startsWith("#") ||
-            value === ""
-          ) {
-            return match;
-          }
-
-          try {
-            const absolute = new URL(value, url).href;
-            return `${attr}="/proxy?url=${encodeURIComponent(absolute)}"`;
-          } catch {
-            return match;
-          }
+        /(href|src|action|data-src|data-original)="([^"]*)"/gi,
+        (m, attr, value) => {
+          const abs = proxifyUrl(value, url);
+          if (!abs) return m;
+          return `${attr}="/proxy?url=${encodeURIComponent(abs)}"`;
         }
       );
+
+      // srcset 対応
+      html = html.replace(/srcset="([^"]*)"/gi, (m, value) => {
+        const items = value.split(",").map(part => {
+          const [u, size] = part.trim().split(/\s+/);
+          const abs = proxifyUrl(u, url);
+          return abs ? `/proxy?url=${encodeURIComponent(abs)}${size ? " " + size : ""}` : part;
+        });
+        return `srcset="${items.join(", ")}"`;
+      });
 
       // baseタグ削除
       html = html.replace(/<base[^>]*>/gi, "");
@@ -76,7 +85,7 @@ app.get("/proxy", async (req, res) => {
       return res.send(html);
     }
 
-    // ===== HTML以外（画像・CSS・JS）=====
+    // ===== 画像・CSS・JS =====
     res.status(r.status);
     r.headers.forEach((v, k) => {
       if (
