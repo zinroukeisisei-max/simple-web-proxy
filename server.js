@@ -1,5 +1,6 @@
 const express = require("express");
 const app = express();
+app.use(express.urlencoded({ extended: true }));
 
 const PORT = process.env.PORT || 3000;
 const INTERNAL_KEY = process.env.PROXY_KEY;
@@ -52,6 +53,99 @@ const r = await fetch(url, {
     "referer": url.origin
   }
 });
+    app.post("/proxy", async (req, res) => {
+  const target = req.query.url;
+  if (!target) return res.send("url required");
+  if (!INTERNAL_KEY) return res.status(500).send("proxy not configured");
+
+  let url;
+  try {
+    url = new URL(target);
+  } catch {
+    return res.send("invalid url");
+  }
+
+  try {
+    const r = await fetch(url, {
+      method: "POST",
+      headers: {
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "content-type": "application/x-www-form-urlencoded",
+        "referer": url.origin
+      },
+      body: new URLSearchParams(req.body)
+    });
+
+    const contentType = r.headers.get("content-type") || "";
+
+    if (contentType.includes("text/html")) {
+      let html = await r.text();
+
+      // JS無効化
+      html = html.replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, "");
+
+      // noscript展開
+      html = html.replace(/<noscript>([\s\S]*?)<\/noscript>/gi, "$1");
+
+      // lazy解除
+      html = html.replace(/loading="lazy"/gi, "");
+
+      // href / src / action / data-src
+      html = html.replace(
+        /(href|src|action|data-src|data-original)="([^"]*)"/gi,
+        (m, attr, value) => {
+          try {
+            const abs = new URL(value, url).href;
+            return `${attr}="/proxy?url=${encodeURIComponent(abs)}"`;
+          } catch {
+            return m;
+          }
+        }
+      );
+
+      // srcset
+      html = html.replace(/srcset="([^"]*)"/gi, (m, value) => {
+        const items = value.split(",").map(part => {
+          const [u, size] = part.trim().split(/\s+/);
+          try {
+            const abs = new URL(u, url).href;
+            return `/proxy?url=${encodeURIComponent(abs)}${size ? " " + size : ""}`;
+          } catch {
+            return part;
+          }
+        });
+        return `srcset="${items.join(", ")}"`;
+      });
+
+      // CSS url()
+      html = html.replace(
+        /url\((['"]?)(.*?)\1\)/gi,
+        (m, q, value) => {
+          try {
+            const abs = new URL(value, url).href;
+            return `url("/proxy?url=${encodeURIComponent(abs)}")`;
+          } catch {
+            return m;
+          }
+        }
+      );
+
+      html = html.replace(/<base[^>]*>/gi, "");
+
+      res.setHeader("content-type", contentType);
+      return res.send(html);
+    }
+
+    res.status(r.status);
+    const buffer = Buffer.from(await r.arrayBuffer());
+    res.send(buffer);
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).send("post fetch error");
+  }
+});
+
 
     const contentType = r.headers.get("content-type") || "";
 
