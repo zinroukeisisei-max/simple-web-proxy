@@ -1,25 +1,26 @@
-const INTERNAL_KEY = process.env.PROXY_KEY;
-
 const express = require("express");
 const app = express();
 
 const PORT = process.env.PORT || 3000;
-const PROXY_KEY = process.env.PROXY_KEY || "local";
+const INTERNAL_KEY = process.env.PROXY_KEY;
+
+app.get("/", (req, res) => {
+  res.send(`
+    <h2>Simple Web Proxy</h2>
+    <form action="/proxy">
+      <input name="url" placeholder="https://example.com" size="50" required />
+      <button>Open</button>
+    </form>
+  `);
+});
 
 app.get("/proxy", async (req, res) => {
   const target = req.query.url;
-
   if (!target) return res.send("url required");
 
   if (!INTERNAL_KEY) {
     return res.status(500).send("proxy not configured");
   }
-
-app.get("/proxy", async (req, res) => {
-  const { url: target, key } = req.query;
-
-  if (!target) return res.send("url required");
-  if (key !== PROXY_KEY) return res.status(403).send("forbidden");
 
   let url;
   try {
@@ -42,41 +43,40 @@ app.get("/proxy", async (req, res) => {
 
     const contentType = r.headers.get("content-type") || "";
 
-    // ---- HTMLの場合：書き換え ----
+    // ===== HTML の場合 =====
     if (contentType.includes("text/html")) {
       let html = await r.text();
-      const base = url.origin;
 
-      // href / src / action を全部プロキシ経由に
       html = html.replace(
-        /(href|src|action)="(.*?)"/gi,
+        /(href|src|action)="([^"]*)"/gi,
         (match, attr, value) => {
+          // 無視するやつ
           if (
-            value.startsWith("http") ||
-            value.startsWith("/") ||
-            value.startsWith("./")
+            value.startsWith("javascript:") ||
+            value.startsWith("data:") ||
+            value.startsWith("#") ||
+            value === ""
           ) {
-            try {
-              const absolute = new URL(value, url).href;
-              return `${attr}="/proxy?url=${encodeURIComponent(
-                absolute
-              )}&key=${key}"`;
-            } catch {
-              return match;
-            }
+            return match;
           }
-          return match;
+
+          try {
+            const absolute = new URL(value, url).href;
+            return `${attr}="/proxy?url=${encodeURIComponent(absolute)}"`;
+          } catch {
+            return match;
+          }
         }
       );
 
-      // <base> タグ破壊対策
+      // baseタグ削除
       html = html.replace(/<base[^>]*>/gi, "");
 
       res.setHeader("content-type", contentType);
       return res.send(html);
     }
 
-    // ---- HTML以外（画像・CSS・JS） ----
+    // ===== HTML以外（画像・CSS・JS）=====
     res.status(r.status);
     r.headers.forEach((v, k) => {
       if (
