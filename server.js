@@ -4,16 +4,6 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const PROXY_KEY = process.env.PROXY_KEY || "local";
 
-app.get("/", (req, res) => {
-  res.send(`
-    <h2>Simple Web Proxy</h2>
-    <form action="/proxy">
-      <input name="url" placeholder="https://example.com" size="50" required />
-      <input name="key" placeholder="key" required />
-      <button>Open</button>
-    </form>
-  `);
-});
 
 app.get("/proxy", async (req, res) => {
   const { url: target, key } = req.query;
