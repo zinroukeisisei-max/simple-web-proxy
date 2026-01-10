@@ -1,9 +1,19 @@
+const INTERNAL_KEY = process.env.PROXY_KEY;
+
 const express = require("express");
 const app = express();
 
 const PORT = process.env.PORT || 3000;
 const PROXY_KEY = process.env.PROXY_KEY || "local";
 
+app.get("/proxy", async (req, res) => {
+  const target = req.query.url;
+
+  if (!target) return res.send("url required");
+
+  if (!INTERNAL_KEY) {
+    return res.status(500).send("proxy not configured");
+  }
 
 app.get("/proxy", async (req, res) => {
   const { url: target, key } = req.query;
