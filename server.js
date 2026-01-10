@@ -8,7 +8,7 @@ app.get("/", (req, res) => {
   res.send(`
     <h2>Simple Web Proxy</h2>
     <form action="/proxy">
-      <input name="url" placeholder="https://example.com" size="50" required />
+      <input name="url" placeholder="https://example.com" size="60" required />
       <button>Open</button>
     </form>
   `);
@@ -58,7 +58,16 @@ app.get("/proxy", async (req, res) => {
     if (contentType.includes("text/html")) {
       let html = await r.text();
 
-      // 属性系（href/src/action/data-src など）
+      // script を無効化（JSによる破壊防止）
+      html = html.replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, "");
+
+      // noscript 内を展開（lazy画像救済）
+      html = html.replace(/<noscript>([\s\S]*?)<\/noscript>/gi, "$1");
+
+      // lazy 無効化
+      html = html.replace(/loading="lazy"/gi, "");
+
+      // href / src / action / data-src 等
       html = html.replace(
         /(href|src|action|data-src|data-original)="([^"]*)"/gi,
         (m, attr, value) => {
@@ -73,12 +82,24 @@ app.get("/proxy", async (req, res) => {
         const items = value.split(",").map(part => {
           const [u, size] = part.trim().split(/\s+/);
           const abs = proxifyUrl(u, url);
-          return abs ? `/proxy?url=${encodeURIComponent(abs)}${size ? " " + size : ""}` : part;
+          return abs
+            ? `/proxy?url=${encodeURIComponent(abs)}${size ? " " + size : ""}`
+            : part;
         });
         return `srcset="${items.join(", ")}"`;
       });
 
-      // baseタグ削除
+      // CSS 内 background-image 等
+      html = html.replace(
+        /url\((['"]?)(.*?)\1\)/gi,
+        (m, q, value) => {
+          const abs = proxifyUrl(value, url);
+          if (!abs) return m;
+          return `url("/proxy?url=${encodeURIComponent(abs)}")`;
+        }
+      );
+
+      // base タグ削除
       html = html.replace(/<base[^>]*>/gi, "");
 
       res.setHeader("content-type", contentType);
