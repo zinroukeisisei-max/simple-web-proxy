@@ -1,20 +1,23 @@
 const express = require("express");
 const app = express();
+
 app.use(express.urlencoded({ extended: true }));
 
 const PORT = process.env.PORT || 3000;
 const INTERNAL_KEY = process.env.PROXY_KEY;
 
+// ===== トップページ =====
 app.get("/", (req, res) => {
   res.send(`
     <h2>Simple Web Proxy</h2>
-    <form action="/proxy">
+    <form action="/proxy" method="GET">
       <input name="url" placeholder="https://example.com" size="60" required />
       <button>Open</button>
     </form>
   `);
 });
 
+// ===== URL解決 =====
 function resolveUrl(raw, base) {
   if (!raw) return null;
   if (
@@ -33,6 +36,7 @@ function resolveUrl(raw, base) {
   }
 }
 
+// ===== GET / POST 両対応 =====
 app.all("/proxy", async (req, res) => {
   const target = req.query.url;
   if (!target) return res.send("url required");
@@ -49,7 +53,7 @@ app.all("/proxy", async (req, res) => {
     const options = {
       method: req.method,
       headers: {
-        "user-agent": "Mozilla/5.0",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
         "accept": "*/*",
         "referer": url.origin
       }
@@ -67,13 +71,16 @@ app.all("/proxy", async (req, res) => {
     if (contentType.includes("text/html")) {
       let html = await r.text();
 
-      html = html.replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, "");
-      html = html.replace(/<noscript>([\s\S]*?)<\/noscript>/gi, "$1");
-      html = html.replace(/loading="lazy"/gi, "");
+      // base タグ除去
       html = html.replace(/<base[^>]*>/gi, "");
 
+      // lazy 読み込み対策
+      html = html.replace(/loading="lazy"/gi, "");
+      html = html.replace(/<noscript>([\s\S]*?)<\/noscript>/gi, "$1");
+
+      // href / src / action / data-src 等
       html = html.replace(
-        /(href|src|data-src|data-original)="([^"]*)"/gi,
+        /(href|src|action|data-src|data-original)="([^"]*)"/gi,
         (m, attr, value) => {
           const abs = resolveUrl(value, url);
           return abs
@@ -82,11 +89,7 @@ app.all("/proxy", async (req, res) => {
         }
       );
 
-      html = html.replace(
-        /action="([^"]*)"/gi,
-        () => `action="/proxy?url=${encodeURIComponent(url.href)}"`
-      );
-
+      // srcset
       html = html.replace(/srcset="([^"]*)"/gi, (m, value) => {
         const items = value.split(",").map(part => {
           const [u, size] = part.trim().split(/\s+/);
@@ -98,6 +101,7 @@ app.all("/proxy", async (req, res) => {
         return `srcset="${items.join(", ")}"`;
       });
 
+      // CSS url()
       html = html.replace(
         /url\((['"]?)(.*?)\1\)/gi,
         (m, q, value) => {
@@ -108,11 +112,17 @@ app.all("/proxy", async (req, res) => {
         }
       );
 
+      // CSP（JS許可）
+      res.setHeader(
+        "content-security-policy",
+        "default-src * 'unsafe-inline' 'unsafe-eval' data: blob:;"
+      );
+
       res.setHeader("content-type", contentType);
       return res.send(html);
     }
 
-    // ===== Assets =====
+    // ===== 画像・CSS・JS =====
     res.status(r.status);
     r.headers.forEach((v, k) => {
       if (!["content-encoding", "content-security-policy", "x-frame-options"].includes(k)) {
