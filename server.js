@@ -1,6 +1,7 @@
 const express = require("express");
 const fetch = require("node-fetch");
-const cors = require("cors"); // CORSを追加
+const fetchCookie = require("fetch-cookie");
+const cors = require("cors");
 const app = express();
 
 app.use(cors());
@@ -39,6 +40,9 @@ function resolveUrl(raw, base) {
   }
 }
 
+// クッキーを使用するためのfetch
+const fetchWithCookie = fetchCookie(fetch);
+
 // ===== GET / POST 両対応 =====
 app.all("/proxy", async (req, res) => {
   const target = req.query.url;
@@ -56,7 +60,7 @@ app.all("/proxy", async (req, res) => {
     const options = {
       method: req.method,
       headers: {
-        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
         "accept": "*/*",
         "referer": url.origin,
         "x-requested-with": "XMLHttpRequest"
@@ -68,7 +72,7 @@ app.all("/proxy", async (req, res) => {
       options.body = new URLSearchParams(req.body);
     }
 
-    const r = await fetch(url, options);
+    const r = await fetchWithCookie(url, options);
     const contentType = r.headers.get("content-type") || "";
 
     // ===== HTML =====
