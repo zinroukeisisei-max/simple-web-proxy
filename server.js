@@ -1,6 +1,9 @@
 const express = require("express");
+const fetch = require("node-fetch");
+const cors = require("cors"); // CORSを追加
 const app = express();
 
+app.use(cors());
 app.use(express.urlencoded({ extended: true }));
 
 const PORT = process.env.PORT || 3000;
@@ -53,9 +56,10 @@ app.all("/proxy", async (req, res) => {
     const options = {
       method: req.method,
       headers: {
-        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3",
         "accept": "*/*",
-        "referer": url.origin
+        "referer": url.origin,
+        "x-requested-with": "XMLHttpRequest"
       }
     };
 
