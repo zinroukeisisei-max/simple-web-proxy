@@ -4,7 +4,11 @@ const fetchCookie = require("fetch-cookie");
 const cors = require("cors");
 const app = express();
 
-app.use(cors());
+app.use(cors({
+  origin: '*', // 必要に応じて特定のオリジンに制限
+  methods: ['GET', 'POST'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+}));
 app.use(express.urlencoded({ extended: true }));
 
 const PORT = process.env.PORT || 3000;
@@ -43,6 +47,13 @@ function resolveUrl(raw, base) {
 // クッキーを使用するためのfetch
 const fetchWithCookie = fetchCookie(fetch);
 
+// User-Agentのリスト
+const userAgents = [
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Gecko/20100101 Firefox/89.0",
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Safari/605.1.15"
+];
+
 // ===== GET / POST 両対応 =====
 app.all("/proxy", async (req, res) => {
   const target = req.query.url;
@@ -60,7 +71,7 @@ app.all("/proxy", async (req, res) => {
     const options = {
       method: req.method,
       headers: {
-        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        "user-agent": userAgents[Math.floor(Math.random() * userAgents.length)],
         "accept": "*/*",
         "referer": url.origin,
         "x-requested-with": "XMLHttpRequest"
@@ -142,11 +153,11 @@ app.all("/proxy", async (req, res) => {
     res.send(buffer);
 
   } catch (err) {
-    console.error(err);
-    res.status(500).send("fetch error");
+    console.error("Error occurred during fetch:", err);
+    res.status(500).send("fetch error: " + err.message);
   }
 });
 
 app.listen(PORT, () => {
-  console.log("proxy running");
+  console.log("proxy running on port " + PORT);
 });
