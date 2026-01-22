@@ -152,7 +152,7 @@ app.all("/proxy", async (req, res) => {
 
   } catch (err) {
     console.error("Error occurred during fetch:", err); // 詳細なエラーをログに出力
-    res.status(500).send("fetch error: " + JSON.stringify(err)); // エラー内容をJSON形式で返す
+    res.status(500).send("fetch error: " + JSON.stringify(err, Object.getOwnPropertyNames(err))); // エラー内容をJSON形式で返す
   }
 });
 
