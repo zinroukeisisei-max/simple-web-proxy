@@ -1,8 +1,10 @@
 import express from 'express';
 import fetch from 'node-fetch';
+import fetchCookie from 'fetch-cookie';
 import cors from 'cors';
 
 const app = express();
+const fetchWithCookie = fetchCookie(fetch); // fetch-cookieを使用
 
 app.use(cors({
   origin: '*',
@@ -80,7 +82,7 @@ app.all("/proxy", async (req, res) => {
     }
 
     // fetchを直接使用
-    const r = await fetch(url, options);
+    const r = await fetchWithCookie(url, options); // fetchWithCookieを使用
     const contentType = r.headers.get("content-type") || "";
 
     // ===== HTML =====
