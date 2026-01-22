@@ -70,7 +70,8 @@ app.all("/proxy", async (req, res) => {
         "accept": "*/*",
         "referer": url.origin,
         "x-requested-with": "XMLHttpRequest"
-      }
+      },
+      credentials: 'include' // クッキーを含める
     };
 
     if (req.method === "POST") {
