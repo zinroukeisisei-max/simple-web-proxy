@@ -1,15 +1,12 @@
 import express from "express";
 import fetch from "node-fetch";
-import fetchCookie from "fetch-cookie";
 import cors from "cors";
 
 const app = express();
-const fetchWithCookie = fetchCookie(fetch);
+const PORT = process.env.PORT || 3000;
 
 app.use(cors({ origin: "*" }));
 app.use(express.urlencoded({ extended: true }));
-
-const PORT = process.env.PORT || 3000;
 
 // ===== トップ =====
 app.get("/", (req, res) => {
@@ -45,7 +42,7 @@ const userAgents = [
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
 ];
 
-// ===== Proxy本体 =====
+// ===== Proxy =====
 app.all("/proxy", async (req, res) => {
   const target = req.query.url;
   if (!target) return res.send("url required");
@@ -68,8 +65,7 @@ app.all("/proxy", async (req, res) => {
         "referer": url.href,
         "origin": url.origin,
         "host": url.host
-      },
-      credentials: "include"
+      }
     };
 
     if (req.method === "POST") {
@@ -77,15 +73,15 @@ app.all("/proxy", async (req, res) => {
       options.body = new URLSearchParams(req.body);
     }
 
-    const r = await fetchWithCookie(url, options);
+    const r = await fetch(url.href, options);
     const contentType = r.headers.get("content-type") || "";
 
-    // ===== Set-Cookie 中継（最重要） =====
-    const rawCookies = r.headers.raw()?.["set-cookie"];
-    if (rawCookies) {
+    // ===== Set-Cookie をブラウザに返す =====
+    const cookies = r.headers.raw()["set-cookie"];
+    if (cookies) {
       res.setHeader(
         "set-cookie",
-        rawCookies.map(c =>
+        cookies.map(c =>
           c
             .replace(/Domain=[^;]+;/i, "")
             .replace(/Secure;/i, "")
@@ -102,7 +98,6 @@ app.all("/proxy", async (req, res) => {
       html = html.replace(/loading="lazy"/gi, "");
       html = html.replace(/<noscript>([\s\S]*?)<\/noscript>/gi, "$1");
 
-      // 属性書き換え
       html = html.replace(
         /(href|src|action|data-src|data-original)="([^"]*)"/gi,
         (m, attr, value) => {
@@ -113,7 +108,6 @@ app.all("/proxy", async (req, res) => {
         }
       );
 
-      // srcset
       html = html.replace(/srcset="([^"]*)"/gi, (m, value) => {
         const items = value.split(",").map(part => {
           const [u, size] = part.trim().split(/\s+/);
@@ -125,7 +119,6 @@ app.all("/proxy", async (req, res) => {
         return `srcset="${items.join(", ")}"`;
       });
 
-      // CSS url()
       html = html.replace(
         /url\((['"]?)(.*?)\1\)/gi,
         (m, q, value) => {
@@ -152,7 +145,7 @@ app.all("/proxy", async (req, res) => {
       return res.send(html);
     }
 
-    // ===== その他（画像・CSS・JS） =====
+    // ===== その他（JS / CSS / 画像） =====
     res.status(r.status);
     r.headers.forEach((v, k) => {
       if (!["content-encoding", "content-security-policy", "x-frame-options"].includes(k)) {
@@ -164,7 +157,7 @@ app.all("/proxy", async (req, res) => {
     res.send(buffer);
 
   } catch (err) {
-    console.error(err);
+    console.error("FETCH ERROR:", err);
     res.status(500).send("fetch error");
   }
 });
@@ -172,3 +165,4 @@ app.all("/proxy", async (req, res) => {
 app.listen(PORT, () => {
   console.log("proxy running on port " + PORT);
 });
+
