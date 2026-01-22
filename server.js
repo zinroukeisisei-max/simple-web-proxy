@@ -1,6 +1,5 @@
 import express from 'express';
 import fetch from 'node-fetch';
-import fetchCookie from 'fetch-cookie';
 import cors from 'cors';
 
 const app = express();
@@ -44,9 +43,6 @@ function resolveUrl(raw, base) {
   }
 }
 
-// クッキーを使用するためのfetch
-const fetchWithCookie = fetchCookie(fetch);
-
 // User-Agentのリスト
 const userAgents = [
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
@@ -82,7 +78,8 @@ app.all("/proxy", async (req, res) => {
       options.body = new URLSearchParams(req.body);
     }
 
-    const r = await fetchWithCookie(url, options);
+    // fetchWithCookieを使用せずにfetchを直接使用
+    const r = await fetch(url, options);
     const contentType = r.headers.get("content-type") || "";
 
     // ===== HTML =====
@@ -153,7 +150,7 @@ app.all("/proxy", async (req, res) => {
 
   } catch (err) {
     console.error("Error occurred during fetch:", err); // 詳細なエラーをログに出力
-    res.status(500).send("fetch error: " + JSON.stringify(err)); // エラー内容をJSON形式で返す
+    res.status(500).send("fetch error: " + (err.message || JSON.stringify(err))); // エラー内容をJSON形式で返す
   }
 });
 
