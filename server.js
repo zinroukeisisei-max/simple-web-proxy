@@ -78,7 +78,7 @@ app.all("/proxy", async (req, res) => {
       options.body = new URLSearchParams(req.body);
     }
 
-    // fetchWithCookieを使用せずにfetchを直接使用
+    // fetchを直接使用
     const r = await fetch(url, options);
     const contentType = r.headers.get("content-type") || "";
 
