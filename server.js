@@ -1,21 +1,17 @@
-import express from 'express';
-import fetch from 'node-fetch';
-import fetchCookie from 'fetch-cookie';
-import cors from 'cors';
+import express from "express";
+import fetch from "node-fetch";
+import fetchCookie from "fetch-cookie";
+import cors from "cors";
 
 const app = express();
-const fetchWithCookie = fetchCookie(fetch); // fetch-cookieを使用
+const fetchWithCookie = fetchCookie(fetch);
 
-app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-}));
+app.use(cors({ origin: "*" }));
 app.use(express.urlencoded({ extended: true }));
 
 const PORT = process.env.PORT || 3000;
 
-// ===== トップページ =====
+// ===== トップ =====
 app.get("/", (req, res) => {
   res.send(`
     <h2>Simple Web Proxy</h2>
@@ -36,23 +32,20 @@ function resolveUrl(raw, base) {
   ) return null;
 
   try {
-    if (raw.startsWith("//")) {
-      return base.protocol + raw;
-    }
+    if (raw.startsWith("//")) return base.protocol + raw;
     return new URL(raw, base).href;
   } catch {
     return null;
   }
 }
 
-// User-Agentのリスト
+// ===== User-Agent =====
 const userAgents = [
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Gecko/20100101 Firefox/89.0",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Safari/605.1.15"
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
 ];
 
-// ===== GET / POST 両対応 =====
+// ===== Proxy本体 =====
 app.all("/proxy", async (req, res) => {
   const target = req.query.url;
   if (!target) return res.send("url required");
@@ -69,11 +62,14 @@ app.all("/proxy", async (req, res) => {
       method: req.method,
       headers: {
         "user-agent": userAgents[Math.floor(Math.random() * userAgents.length)],
-        "accept": "*/*",
-        "referer": url.origin,
-        "x-requested-with": "XMLHttpRequest"
+        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "accept-language": "ja,en-US;q=0.9,en;q=0.8",
+        "accept-encoding": "identity",
+        "referer": url.href,
+        "origin": url.origin,
+        "host": url.host
       },
-      credentials: 'include' // クッキーを含める
+      credentials: "include"
     };
 
     if (req.method === "POST") {
@@ -81,22 +77,32 @@ app.all("/proxy", async (req, res) => {
       options.body = new URLSearchParams(req.body);
     }
 
-    // fetchを直接使用
-    const r = await fetchWithCookie(url, options); // fetchWithCookieを使用
+    const r = await fetchWithCookie(url, options);
     const contentType = r.headers.get("content-type") || "";
+
+    // ===== Set-Cookie 中継（最重要） =====
+    const rawCookies = r.headers.raw()?.["set-cookie"];
+    if (rawCookies) {
+      res.setHeader(
+        "set-cookie",
+        rawCookies.map(c =>
+          c
+            .replace(/Domain=[^;]+;/i, "")
+            .replace(/Secure;/i, "")
+            .replace(/SameSite=None;/i, "")
+        )
+      );
+    }
 
     // ===== HTML =====
     if (contentType.includes("text/html")) {
       let html = await r.text();
 
-      // base タグ除去
       html = html.replace(/<base[^>]*>/gi, "");
-
-      // lazy 読み込み対策
       html = html.replace(/loading="lazy"/gi, "");
       html = html.replace(/<noscript>([\s\S]*?)<\/noscript>/gi, "$1");
 
-      // href / src / action / data-src 等
+      // 属性書き換え
       html = html.replace(
         /(href|src|action|data-src|data-original)="([^"]*)"/gi,
         (m, attr, value) => {
@@ -130,7 +136,13 @@ app.all("/proxy", async (req, res) => {
         }
       );
 
-      // CSP（JS許可）
+      // Cookie Clicker 保険
+      html = html.replace(
+        /https:\/\/orteil\.dashnet\.org/gi,
+        "/proxy?url=https://orteil.dashnet.org"
+      );
+
+      res.removeHeader("content-security-policy");
       res.setHeader(
         "content-security-policy",
         "default-src * 'unsafe-inline' 'unsafe-eval' data: blob:;"
@@ -140,7 +152,7 @@ app.all("/proxy", async (req, res) => {
       return res.send(html);
     }
 
-    // ===== 画像・CSS・JS =====
+    // ===== その他（画像・CSS・JS） =====
     res.status(r.status);
     r.headers.forEach((v, k) => {
       if (!["content-encoding", "content-security-policy", "x-frame-options"].includes(k)) {
@@ -152,8 +164,8 @@ app.all("/proxy", async (req, res) => {
     res.send(buffer);
 
   } catch (err) {
-    console.error("Error occurred during fetch:", err); // 詳細なエラーをログに出力
-    res.status(500).send("fetch error: " + JSON.stringify(err)); // エラー内容をJSON形式で返す
+    console.error(err);
+    res.status(500).send("fetch error");
   }
 });
 
