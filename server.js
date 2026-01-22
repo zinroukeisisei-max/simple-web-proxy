@@ -5,14 +5,13 @@ const cors = require("cors");
 const app = express();
 
 app.use(cors({
-  origin: '*', // 必要に応じて特定のオリジンに制限
+  origin: '*',
   methods: ['GET', 'POST'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 app.use(express.urlencoded({ extended: true }));
 
 const PORT = process.env.PORT || 3000;
-const INTERNAL_KEY = process.env.PROXY_KEY;
 
 // ===== トップページ =====
 app.get("/", (req, res) => {
@@ -58,7 +57,6 @@ const userAgents = [
 app.all("/proxy", async (req, res) => {
   const target = req.query.url;
   if (!target) return res.send("url required");
-  if (!INTERNAL_KEY) return res.status(500).send("proxy not configured");
 
   let url;
   try {
