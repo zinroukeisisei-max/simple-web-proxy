@@ -65,18 +65,28 @@ app.all("/proxy", async (req, res) => {
         "referer": url.href,
         "origin": url.origin,
         "host": url.host
-      }
+      },
+      credentials: "include" // ★重要
     };
 
     if (req.method === "POST") {
       options.headers["content-type"] = "application/x-www-form-urlencoded";
-      options.body = new URLSearchParams(req.body);
+      options.body = new URLSearchParams(req.body).toString(); // ★重要
     }
 
     const r = await fetch(url.href, options);
     const contentType = r.headers.get("content-type") || "";
 
-    // ===== Set-Cookie をブラウザに返す =====
+    // ===== リダイレクト処理（超重要） =====
+    const location = r.headers.get("location");
+    if (location) {
+      const abs = resolveUrl(location, url);
+      if (abs) {
+        res.setHeader("location", "/proxy?url=" + encodeURIComponent(abs));
+      }
+    }
+
+    // ===== Set-Cookie =====
     const cookies = r.headers.raw()["set-cookie"];
     if (cookies) {
       res.setHeader(
@@ -145,7 +155,7 @@ app.all("/proxy", async (req, res) => {
       return res.send(html);
     }
 
-    // ===== その他（JS / CSS / 画像） =====
+    // ===== その他 =====
     res.status(r.status);
     r.headers.forEach((v, k) => {
       if (!["content-encoding", "content-security-policy", "x-frame-options"].includes(k)) {
@@ -153,8 +163,7 @@ app.all("/proxy", async (req, res) => {
       }
     });
 
-    const buffer = Buffer.from(await r.arrayBuffer());
-    res.send(buffer);
+    res.send(Buffer.from(await r.arrayBuffer()));
 
   } catch (err) {
     console.error("FETCH ERROR:", err);
@@ -165,4 +174,3 @@ app.all("/proxy", async (req, res) => {
 app.listen(PORT, () => {
   console.log("proxy running on port " + PORT);
 });
-
