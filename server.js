@@ -4,7 +4,7 @@ import cors from "cors";
 import dns from "dns/promises";
 import ipaddr from "ipaddr.js";
 import crypto from "crypto";
-import LRU from "lru-cache";
+import { LRUCache } from "lru-cache"; // 修正: LRUCacheをインポート
 import tough from "tough-cookie";
 import expressWs from "express-ws";
 import WebSocket from "ws";
@@ -54,7 +54,7 @@ app.all("/p/*", (req, res, next) => {
 });
 
 // ===== Cookie 管理 =====
-const cookieJar = new LRU({
+const cookieJar = new LRUCache({ // 修正: LRUCacheを使用
   max: 100,
   ttl: 1000 * 60 * 30
 });
