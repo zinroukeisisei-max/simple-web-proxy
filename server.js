@@ -142,9 +142,13 @@ app.all("/proxy", async (req, res, next) => {
     };
 
     for (const [k, v] of Object.entries(req.headers)) {
-      if (!["host", "content-length"].includes(k)) {
-        options.headers[k] = v;
-      }
+      if ([
+        "host",
+        "content-length",
+        "accept-encoding" // ★追加
+      ].includes(k)) continue;
+
+      options.headers[k] = v;
     }
 
     const jar = cookieJar.get(jarKey);
@@ -190,15 +194,40 @@ app.all("/proxy", async (req, res, next) => {
     if (ct.includes("text/html")) {
       let html = await response.text();
 
-      // <base>タグの追加（Pixiv/Pinterestでは条件付き）
-      if (!/pixiv\.net|pinterest\.com/.test(url.hostname)) {
-        html = html.replace(/<head>/, `<head><base href="${url.origin}/">`);
+      // <base>タグの追加（Yahoo系では無効化）
+      if (!/yahoo\.co\.jp|pixiv\.net|pinterest\.com/.test(url.hostname)) {
+        html = html.replace(
+          /<head>/i,
+          `<head><base href="${url.origin}/">`
+        );
       }
+
+      // CSS内 url() の書き換え
+      html = html.replace(
+        /url\((['"]?)([^'")]+)\1\)/gi,
+        (m, q, v) => {
+          try {
+            const abs = new URL(v, url).href;
+            return `url("/p/${encodeURIComponent(abs)}")`;
+          } catch {
+            return m;
+          }
+        }
+      );
 
       // 書き換え対象の要素を追加
       html = html.replace(
         /(href|src|action|srcset)="([^"]*)"/gi,
         (m, a, v) => {
+          if (a.toLowerCase() === "srcset") {
+            const fixed = v.split(",").map(p => {
+              const [u, s] = p.trim().split(" ");
+              const abs = new URL(u, url).href;
+              return `/p/${encodeURIComponent(abs)}${s ? " " + s : ""}`;
+            }).join(", ");
+            return `${a}="${fixed}"`;
+          }
+
           try {
             const abs = new URL(v, url).href;
             return `${a}="/p/${encodeURIComponent(abs)}"`; // URLの渡し方を変更
@@ -230,8 +259,42 @@ app.all("/proxy", async (req, res, next) => {
         return m;
       });
 
-      res.setHeader("content-type", ct);
-      return res.send(html);
+      // charsetを強制的に付ける
+      res.setHeader(
+        "content-type",
+        ct.includes("charset")
+          ? ct
+          : ct + "; charset=utf-8"
+      );
+
+      res.send(html);
+      return;
+    }
+
+    // ===== CSS の場合 =====
+    if (ct.includes("text/css")) {
+      let css = await response.text();
+
+      css = css.replace(
+        /url\((['"]?)([^'")]+)\1\)/gi,
+        (m, q, v) => {
+          try {
+            const abs = new URL(v, fetchUrl).href;
+            return `url("/p/${encodeURIComponent(abs)}")`;
+          } catch {
+            return m;
+          }
+        }
+      );
+
+      res.setHeader(
+        "content-type",
+        ct.includes("charset")
+          ? ct
+          : ct + "; charset=utf-8"
+      );
+
+      return res.send(css);
     }
 
     res.status(response.status);
@@ -299,4 +362,5 @@ app.ws("/ws", async (ws, req) => {
 app.listen(PORT, () => {
   console.log("Proxy running on port " + PORT);
 });
+
 
