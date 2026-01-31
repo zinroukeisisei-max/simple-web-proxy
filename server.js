@@ -8,6 +8,7 @@ import LRU from "lru-cache";
 import tough from "tough-cookie";
 import expressWs from "express-ws";
 import WebSocket from "ws";
+// import fetch from "node-fetch"; // Node 18+ なら不要なので削除
 
 // ===== app 基本設定 =====
 const app = express();
@@ -36,18 +37,20 @@ app.get("/", (req, res) => {
 </head>
 <body>
   <h1>Simple Web Proxy</h1>
-  <form action="/proxy" method="get">
-    <input
-      name="url"
-      placeholder="https://example.com"
-      style="width:300px"
-      required
-    />
-    <button type="submit">Go</button>
+  <form onsubmit="event.preventDefault(); location.href='/p/'+encodeURIComponent(url.value)">
+    <input id="url" placeholder="https://example.com" required />
+    <button>Go</button>
   </form>
 </body>
 </html>
 `);
+});
+
+// ===== path型 proxy =====
+app.all("/p/*", (req, res, next) => {
+  req.url = "/proxy"; // 明示的に/proxyに転送
+  req.query = { url: decodeURIComponent(req.params[0]) };
+  next();
 });
 
 // ===== Cookie 管理 =====
@@ -63,7 +66,7 @@ function getOrCreateProxySid(req, res) {
   const sid = crypto.randomBytes(16).toString("hex");
   res.setHeader(
     "Set-Cookie",
-    `proxy_sid=${sid}; HttpOnly; Path=/; SameSite=Lax`
+    `proxy_sid=${sid}; HttpOnly; Path=/; SameSite=None; Secure`
   );
   return sid;
 }
@@ -121,9 +124,6 @@ async function resolveRedirect(url) {
 
 // ===== proxy 本体 =====
 app.all("/proxy", async (req, res, next) => {
-  if (req.headers.origin && !ALLOWED_ORIGINS.includes(req.headers.origin)) {
-    return res.status(403).send("forbidden");
-  }
   next();
 }, async (req, res) => {
   try {
@@ -186,26 +186,67 @@ app.all("/proxy", async (req, res, next) => {
 
     const ct = response.headers.get("content-type") || "";
 
+    // ===== HTML 書き換え =====
     if (ct.includes("text/html")) {
       let html = await response.text();
+
+      // <base>タグの追加（Pixiv/Pinterestでは条件付き）
+      if (!/pixiv\.net|pinterest\.com/.test(url.hostname)) {
+        html = html.replace(/<head>/, `<head><base href="${url.origin}/">`);
+      }
+
+      // 書き換え対象の要素を追加
       html = html.replace(
-        /(href|src|action)="([^"]*)"/gi,
+        /(href|src|action|srcset)="([^"]*)"/gi,
         (m, a, v) => {
           try {
             const abs = new URL(v, url).href;
-            return `${a}="/proxy?url=${encodeURIComponent(abs)}"`;
+            return `${a}="/p/${encodeURIComponent(abs)}"`; // URLの渡し方を変更
           } catch {
             return m;
           }
         }
       );
+
+      // JavaScript内のfetchやWebSocketの書き換え
+      html = html.replace(/fetch\("([^"]*)"/g, (m, v) => {
+        const abs = new URL(v, url).href;
+        return `fetch("/p/${encodeURIComponent(abs)}")`; // URLの渡し方を変更
+      });
+      
+      html = html.replace(/new WebSocket\("([^"]*)"/g, (m, v) => {
+        const abs = new URL(v, url).href;
+        return `new WebSocket("/ws?url=${encodeURIComponent(abs)}")`;
+      });
+
+      // meta refreshの書き換え
+      html = html.replace(/<meta http-equiv="refresh" content="([^"]*)"/gi, (m, v) => {
+        const parts = v.split(";");
+        const urlMatch = parts[1]?.match(/url=(.*)/);
+        if (urlMatch) {
+          const abs = new URL(urlMatch[1], url).href;
+          return `<meta http-equiv="refresh" content="${parts[0]};url=/p/${encodeURIComponent(abs)}"`;
+        }
+        return m;
+      });
+
       res.setHeader("content-type", ct);
       return res.send(html);
     }
 
     res.status(response.status);
+    
+    // ===== ヘッダーの設定 =====
+    const BLOCK_HEADERS = [
+      "content-security-policy",
+      "content-security-policy-report-only",
+      "cross-origin-opener-policy",
+      "cross-origin-embedder-policy",
+      "cross-origin-resource-policy"
+    ];
+
     response.headers.forEach((v, k) => {
-      if (k.toLowerCase() === "content-security-policy") return;
+      if (BLOCK_HEADERS.includes(k.toLowerCase())) return;
       res.setHeader(k, v);
     });
 
