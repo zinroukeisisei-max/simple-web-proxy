@@ -1,3 +1,27 @@
+app.get("/", (req, res) => {
+    res.type("html").send(`
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Simple Web Proxy</title>
+</head>
+<body>
+  <h1>Simple Web Proxy</h1>
+  <form action="/proxy" method="get">
+    <input
+      name="url"
+      placeholder="https://example.com"
+      style="width:300px"
+      required
+    />
+    <button type="submit">Go</button>
+  </form>
+</body>
+</html>
+`);
+});
+
 import express from "express";
 import cors from "cors";
 import dns from "dns/promises";
