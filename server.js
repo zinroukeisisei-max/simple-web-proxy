@@ -1,176 +1,287 @@
 import express from "express";
-import fetch from "node-fetch";
 import cors from "cors";
+import dns from "dns/promises";
+import ipaddr from "ipaddr.js";
+import crypto from "crypto"; // cryptoをインポート
+import LRU from "lru-cache"; // LRUキャッシュをインポート
+import tough from "tough-cookie"; // tough-cookieをインポート
+import expressWs from "express-ws"; // WebSocket用
+import WebSocket from "ws"; // WebSocketをインポート
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(cors({ origin: "*" }));
-app.use(express.urlencoded({ extended: true }));
-
-// ===== トップ =====
-app.get("/", (req, res) => {
-  res.send(`
-    <h2>Simple Web Proxy</h2>
-    <form action="/proxy" method="GET">
-      <input name="url" placeholder="https://example.com" size="60" required />
-      <button>Open</button>
-    </form>
-  `);
-});
-
-// ===== URL解決 =====
-function resolveUrl(raw, base) {
-  if (!raw) return null;
-  if (
-    raw.startsWith("javascript:") ||
-    raw.startsWith("data:") ||
-    raw.startsWith("#")
-  ) return null;
-
-  try {
-    if (raw.startsWith("//")) return base.protocol + raw;
-    return new URL(raw, base).href;
-  } catch {
-    return null;
-  }
-}
-
-// ===== User-Agent =====
-const userAgents = [
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
+// ALLOWED_ORIGINSの定義
+const ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "https://simple-web-proxy-5kvu.onrender.com"
 ];
 
-// ===== Proxy =====
-app.all("/proxy", async (req, res) => {
-  const target = req.query.url;
-  if (!target) return res.send("url required");
+// CORS設定の統一
+app.use(cors({
+    origin: ALLOWED_ORIGINS,
+    credentials: true
+}));
 
-  let url;
-  try {
-    url = new URL(target);
-  } catch {
-    return res.send("invalid url");
-  }
+expressWs(app);
 
-  try {
-    const options = {
-      method: req.method,
-      headers: {
-        "user-agent": userAgents[Math.floor(Math.random() * userAgents.length)],
-        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "accept-language": "ja,en-US;q=0.9,en;q=0.8",
-        "accept-encoding": "identity",
-        "referer": url.href,
-        "origin": url.origin,
-        "host": url.host
-      },
-      credentials: "include" // ★重要
+// Cookie管理用のLRUキャッシュ
+const cookieJar = new LRU({
+    max: 100, // 最大数
+    ttl: 1000 * 60 * 30 // 30分のTTL
+});
+
+// proxy_sidを発行または取得する関数
+function getOrCreateProxySid(req, res) {
+    const m = (req.headers.cookie || "").match(/proxy_sid=([a-f0-9]+)/);
+    if (m) return m[1];
+
+    const sid = crypto.randomBytes(16).toString("hex");
+    res.setHeader(
+        "Set-Cookie",
+        `proxy_sid=${sid}; HttpOnly; Path=/; SameSite=Lax`
+    );
+    return sid;
+}
+
+// プライベートIPチェック関数
+const isPrivate172 = (addr) => {
+    const parts = addr.split(".").map(Number);
+    return parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31;
+};
+
+// IPv6プライベートアドレスチェック関数
+const isPrivateIPv6 = (addr) => {
+    try {
+        const ip = ipaddr.parse(addr);
+        return ["loopback", "linkLocal", "uniqueLocal", "unspecified"].includes(ip.range());
+    } catch {
+        return true; // DoS対策としてOK
+    }
+};
+
+// IPブロックチェック関数
+function isBlockedIP(address) {
+    return (
+        address.startsWith("127.") ||
+        address.startsWith("10.") ||
+        address.startsWith("192.168.") ||
+        isPrivate172(address) ||
+        isPrivateIPv6(address)
+    );
+}
+
+// raw bodyを取得するミドルウェア
+app.use((req, res, next) => {
+    let data = [];
+    req.on("data", chunk => data.push(chunk));
+    req.on("end", () => {
+        req.rawBody = Buffer.concat(data);
+        next();
+    });
+});
+
+// URL検証関数
+async function validateTarget(raw) {
+    if (!raw) throw new Error("Invalid URL");
+    if (raw.startsWith("javascript:") || raw.startsWith("data:") || raw.startsWith("#")) {
+        throw new Error("Blocked URL");
+    }
+    return new URL(raw);
+}
+
+// URL解決関数
+async function resolveRedirect(url) {
+    const results = await dns.lookup(url.hostname, { all: true });
+
+    // ブロックされていないIPを見つける
+    const record = results.find(r => !isBlockedIP(r.address));
+    if (!record) throw new Error("Blocked IP");
+
+    return {
+        ip: record.address,
+        protocol: url.protocol,
+        host: url.hostname,
+        path: url.pathname + url.search
     };
+}
 
-    if (req.method === "POST") {
-      options.headers["content-type"] = "application/x-www-form-urlencoded";
-      options.body = new URLSearchParams(req.body).toString(); // ★重要
+// プロキシ処理
+app.all("/proxy", async (req, res, next) => {
+    // Originチェック
+    if (req.headers.origin && !ALLOWED_ORIGINS.includes(req.headers.origin)) {
+        return res.status(403).send("forbidden");
     }
+    next();
+}, async (req, res) => {
+    const target = req.query.url;
+    const proxySid = getOrCreateProxySid(req, res); // proxy_sidを取得または発行
+    try {
+        const url = await validateTarget(target);
+        const { host } = await resolveRedirect(url); // IPはSSRFチェック目的で呼ぶだけ
 
-    const r = await fetch(url.href, options);
-    const contentType = r.headers.get("content-type") || "";
+        let fetchUrl = url.href; // fetchはhostnameのままにする
 
-    // ===== リダイレクト処理（超重要） =====
-    const location = r.headers.get("location");
-    if (location) {
-      const abs = resolveUrl(location, url);
-      if (abs) {
-        res.setHeader("location", "/proxy?url=" + encodeURIComponent(abs));
-      }
-    }
+        const jarKey = proxySid + ":" + host; // 統一されたキーを使用
+        const options = {
+            method: req.method,
+            headers: (() => {
+                const h = {};
+                for (const [k, v] of Object.entries(req.headers)) { 
+                    if (!["host", "content-length"].includes(k)) {
+                        h[k] = v;
+                    }
+                }
+                return h;
+            })(), // ヘッダーを安全に取得
+        };
 
-    // ===== Set-Cookie =====
-    const cookies = r.headers.raw()["set-cookie"];
-    if (cookies) {
-      res.setHeader(
-        "set-cookie",
-        cookies.map(c =>
-          c
-            .replace(/Domain=[^;]+;/i, "")
-            .replace(/Secure;/i, "")
-            .replace(/SameSite=None;/i, "")
-        )
-      );
-    }
-
-    // ===== HTML =====
-    if (contentType.includes("text/html")) {
-      let html = await r.text();
-
-      html = html.replace(/<base[^>]*>/gi, "");
-      html = html.replace(/loading="lazy"/gi, "");
-      html = html.replace(/<noscript>([\s\S]*?)<\/noscript>/gi, "$1");
-
-      html = html.replace(
-        /(href|src|action|data-src|data-original)="([^"]*)"/gi,
-        (m, attr, value) => {
-          const abs = resolveUrl(value, url);
-          return abs
-            ? `${attr}="/proxy?url=${encodeURIComponent(abs)}"`
-            : m;
+        // 本物のCookieのみを送信
+        const jar = cookieJar.get(jarKey);
+        if (jar) {
+            options.headers.cookie = await jar.getCookieString(url.href); // Cookie文字列を取得
         }
-      );
 
-      html = html.replace(/srcset="([^"]*)"/gi, (m, value) => {
-        const items = value.split(",").map(part => {
-          const [u, size] = part.trim().split(/\s+/);
-          const abs = resolveUrl(u, url);
-          return abs
-            ? `/proxy?url=${encodeURIComponent(abs)}${size ? " " + size : ""}`
-            : part;
+        // 修正: req.bodyをそのまま突っ込むのは壊れる
+        if (req.method !== "GET" && req.method !== "HEAD") {
+            options.body = req.rawBody; // rawBodyを使用
+        }
+
+        const controller = new AbortController();
+        const t = setTimeout(() => controller.abort(), 15000); // 15秒タイムアウト
+
+        let response;
+        let redirectCount = 0;
+        do {
+            response = await globalThis.fetch(fetchUrl, {
+                ...options,
+                signal: controller.signal,
+                redirect: "manual" // 手動リダイレクト
+            });
+
+            if (response.status >= 300 && response.status < 400) {
+                const location = response.headers.get("location");
+                if (!location) break;
+
+                const nextUrl = new URL(location, url);
+                await resolveRedirect(nextUrl); // SSRFチェック目的で呼ぶだけ
+                fetchUrl = nextUrl.href; // fetchはhostnameのままにする
+                options.headers.host = nextUrl.hostname; // Hostを更新
+            }
+            redirectCount++;
+            if (redirectCount > 5) {
+                throw new Error("Too many redirects");
+            }
+        } while (response.status >= 300 && response.status < 400);
+
+        clearTimeout(t); // タイムアウトをクリアする
+
+        const contentType = response.headers.get("content-type") || "";
+        const cookies = response.headers.getSetCookie?.() || []; // 修正: response.headers.raw() -> response.headers.getSetCookie
+
+        if (cookies.length) {
+            const prev = cookieJar.get(jarKey) || new tough.CookieJar(); // tough-cookieインスタンスを取得
+            await Promise.all(
+                cookies.map(c => prev.setCookie(c, `${url.protocol}//${host}/`)) // 修正: pathを含めない
+            );
+            cookieJar.set(jarKey, prev); // tough-cookieインスタンスを保存
+        }
+
+        if (contentType.includes("text/html")) {
+            let html = await response.text();
+
+            // HTMLの書き換え処理を追加
+            html = html.replace(
+                /(href|src|action)="([^"]*)"/gi,
+                (m, attr, value) => {
+                    try {
+                        const abs = new URL(value, url).href;
+                        return `${attr}="/proxy?url=${encodeURIComponent(abs)}"`;
+                    } catch {
+                        return m;
+                    }
+                }
+            );
+
+            res.setHeader("content-type", contentType);
+            return res.send(html);
+        } else if (/javascript|ecmascript/i.test(contentType)) {
+            let js = await response.text();
+            res.setHeader("content-type", contentType);
+            return res.send(js); // transformJSを削除
+        }
+
+        res.status(response.status);
+        response.headers.forEach((v, k) => {
+            if (k.toLowerCase() === "content-security-policy") return; // CSPは無視
+            res.setHeader(k, v);
         });
-        return `srcset="${items.join(", ")}"`;
-      });
 
-      html = html.replace(
-        /url\((['"]?)(.*?)\1\)/gi,
-        (m, q, value) => {
-          const abs = resolveUrl(value, url);
-          return abs
-            ? `url("/proxy?url=${encodeURIComponent(abs)}")`
-            : m;
-        }
-      );
+        res.send(Buffer.from(await response.arrayBuffer()));
 
-      // Cookie Clicker 保険
-      html = html.replace(
-        /https:\/\/orteil\.dashnet\.org/gi,
-        "/proxy?url=https://orteil.dashnet.org"
-      );
+    } catch (err) {
+        console.error("FETCH ERROR:", err);
+        res.status(500).send("fetch error");
+    }
+});
 
-      res.removeHeader("content-security-policy");
-      res.setHeader(
-        "content-security-policy",
-        "default-src * 'unsafe-inline' 'unsafe-eval' data: blob:;"
-      );
-
-      res.setHeader("content-type", contentType);
-      return res.send(html);
+// WebSocketのサポート
+app.ws('/ws', async (ws, req) => {
+    const targetUrl = req.query.url;
+    if (!targetUrl || !/^wss?:\/\//.test(targetUrl)) {
+        ws.close(1008, "Policy violation"); // Closeコードと理由を指定
+        return;
     }
 
-    // ===== その他 =====
-    res.status(r.status);
-    r.headers.forEach((v, k) => {
-      if (!["content-encoding", "content-security-policy", "x-frame-options"].includes(k)) {
-        res.setHeader(k, v);
-      }
+    // SSRF対策
+    const results = await dns.lookup(new URL(targetUrl).hostname, { all: true });
+    const addresses = results.map(r => r.address);
+
+    for (const address of addresses) {
+        if (isBlockedIP(address)) { // 共通関数を使用
+            ws.close(1008, "Policy violation"); // Closeコードと理由を指定
+            return;
+        }
+    }
+
+    // Origin検証
+    const origin = req.headers.origin; // 動的に使用
+    if (req.headers.origin && !ALLOWED_ORIGINS.includes(req.headers.origin)) {
+        ws.close(1008, "Policy violation"); // Closeコードと理由を指定
+        return;
+    }
+
+    const m = (req.headers.cookie || "").match(/proxy_sid=([a-f0-9]+)/);
+    const sid = m?.[1];
+    const jarKey = sid ? sid + ":" + new URL(targetUrl).hostname : null; // 統一されたキーを使用
+    const jar = jarKey ? cookieJar.get(jarKey) : null;
+    const cookie = jar ? await jar.getCookieString(targetUrl) : ""; // Cookieを文字列形式で取得
+
+    // DNS lookupで得たIPを使用してWebSocket接続
+    const target = new URL(targetUrl);
+    const proto = target.protocol === "wss:" ? "wss" : "ws"; // 修正: プロトコルを保持
+    const targetWebSocket = new WebSocket(
+        target.href.replace(/^http/, "ws"), // IPではなくホスト名を使用
+        {
+            headers: {
+                Origin: origin, // 必要に応じて固定Originに変更
+                Cookie: cookie || "" // Cookieを渡す
+            }
+        }
+    );
+
+    targetWebSocket.on('message', (message) => {
+        ws.send(message);
     });
 
-    res.send(Buffer.from(await r.arrayBuffer()));
+    targetWebSocket.on('error', () => ws.close(1002, "Protocol error")); // エラーハンドリング
+    ws.on('error', () => targetWebSocket.close(1002, "Protocol error")); // エラーハンドリング
 
-  } catch (err) {
-    console.error("FETCH ERROR:", err);
-    res.status(500).send("fetch error");
-  }
+    ws.on('close', () => {
+        targetWebSocket.close(1002, "Protocol error");
+    });
 });
 
 app.listen(PORT, () => {
-  console.log("proxy running on port " + PORT);
+    console.log("Proxy running on port " + PORT);
 });
